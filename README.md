@@ -1,120 +1,151 @@
-# HSM — Hardware Sensor Module + Virgo Farm Intelligence
+# HSM — Hardware Sensor Module (SmartFarm)
 
-A dual-component project combining an **ESP32 IoT firmware** for real-time vehicle crash/impact detection with an **AI-powered precision agriculture platform** called **Virgo**. The firmware publishes accelerometer data over MQTT to the cloud, while the front-end presents a full product landing page for the Virgo smart farming solution.
-
----
-
-## Project Components
-
-### 2. Virgo — AI Farm Intelligence Dashboard (`index.html`)
-
-A fully self-contained, animated landing page for **Virgo**, an AI-driven precision agriculture platform developed at Punjab Engineering College, Chandigarh, under the Wadhwani Foundation.
-
-**Page Sections:**
-- **Hero** — Animated Koch-snowflake fractal canvas background, key stats, floating UI cards
-- **Stats Bar** — High-level KPIs (farmers impacted, water saved, yield increase, market size)
-- **Problem** — Four cards covering pain points: crop loss, water waste, market access, disease detection
-- **Solution** — Six feature tiles (soil sensing, crop health AI, water optimisation, market connect, weather alerts, data analytics)
-- **Demo** — Embedded interactive dashboard mockup (live sensor cards, charts, maps)
-- **Market** — TAM breakdown and go-to-market strategy with animated orbit diagram
-- **Financials** — 3-year P&L projections with SVG bar/line chart (profitable by Year 2)
-- **CTA + Footer** — Contact, demo request, social links
+A full-stack IoT smart farming system built on the **ESP32** microcontroller. The firmware reads soil NPK levels, temperature, humidity, air quality, and soil moisture — then publishes the data over **MQTT (HiveMQ Cloud)** every 5 seconds. A **Streamlit Python dashboard** subscribes to the same broker, displays all sensor readings live, and lets you trigger an irrigation pump with a single button click.
 
 ---
 
-## Hardware Requirements (Firmware)
+## System Architecture
 
-| Component | Details |
-|---|---|
-| Microcontroller | ESP32 (NodeMCU-32S) |
-| IMU | MPU6050 (I²C, 3-axis accelerometer + gyroscope) |
-| Connectivity | Wi-Fi 2.4 GHz + TLS MQTT (HiveMQ Cloud) |
+```
+[Sensors] → [ESP32] → [HiveMQ Cloud MQTT] → [Streamlit Dashboard]
+                ↑                                      |
+                └──────── PUMP_ON command ─────────────┘
+```
 
-### Wiring
-
-| ESP32 | MPU6050 |
-|---|---|
-| 3.3V | VCC |
-| GND | GND |
-| GPIO 21 (SDA) | SDA |
-| GPIO 22 (SCL) | SCL |
+- **Topic `farm/sensors`** — ESP32 publishes sensor JSON every 5 s
+- **Topic `farm/control`** — Streamlit publishes `PUMP_ON` to trigger the relay
 
 ---
 
-## Software & Dependencies
+## Hardware
 
-### PlatformIO (`platformio.ini`)
-
-| Setting | Value |
+| Component | Purpose |
 |---|---|
-| Board | `nodemcu-32s` |
-| Platform | `espressif32` |
-| Framework | Arduino |
+| ESP32 (NodeMCU-32S) | Main microcontroller |
+| NPK RS-485 Sensor | Soil nitrogen, phosphorus, potassium via Modbus |
+| DHT11 | Air temperature & humidity |
+| MQ-135 | Air quality (analog) |
+| Capacitive Soil Moisture Sensor | Soil moisture % |
+| Relay Module | Controls irrigation pump |
+| RS-485 to TTL Module | Serial interface for NPK sensor |
 
-**Libraries:**
+### Pin Definitions
+
+| ESP32 Pin | Connected To |
+|---|---|
+| GPIO 4 (RE) | RS-485 module RE pin |
+| GPIO 5 (DE) | RS-485 module DE pin |
+| GPIO 16 (RXD2) | RS-485 module RO (receive) |
+| GPIO 17 (TXD2) | RS-485 module DI (transmit) |
+| GPIO 27 | DHT11 data pin |
+| GPIO 34 | MQ-135 analog output |
+| GPIO 35 | Soil moisture sensor analog output |
+| GPIO 26 | Relay IN (pump control) |
+
+---
+
+## Firmware (`main.cpp`)
+
+### What it does
+
+Every 5 seconds the ESP32:
+
+1. Reads **N, P, K** values from the NPK sensor over RS-485/Modbus
+2. Reads **temperature and humidity** from the DHT11
+3. Reads **air quality** (raw ADC) from the MQ-135
+4. Reads **soil moisture** (mapped to 0–100%) from the capacitive sensor
+5. Serialises everything into a JSON payload and publishes to `farm/sensors`
+6. Listens on `farm/control` — if `PUMP_ON` is received, activates the relay for 5 seconds then turns it off
+
+### Published JSON payload
+
+```json
+{
+  "n": 45,
+  "p": 30,
+  "k": 60,
+  "temp": 28.5,
+  "hum": 65.0,
+  "air": 1200,
+  "soil": 72
+}
+```
+
+### Key libraries
 
 | Library | Purpose |
 |---|---|
-| `electroniccats/MPU6050` | IMU driver (I²C) |
 | `knolleary/PubSubClient` | MQTT client |
-| `arduino-libraries/SPI` | SPI bus support |
-| `adafruit/Adafruit BMP085 Library` | Barometric pressure (optional sensor) |
-| `adafruit/Adafruit Unified Sensor` | Adafruit sensor abstraction layer |
+| `bblanchon/ArduinoJson` | JSON serialisation |
+| `DHT sensor library` | DHT11 temperature & humidity |
+| `electroniccats/MPU6050` | (available, not currently used in main loop) |
+| `adafruit/Adafruit BMP085` | (available, not currently used in main loop) |
 
-### Front-End (`index.html`)
+---
 
-No build tools or dependencies required — pure HTML/CSS/JS, single file.
+## Dashboard (`mqtt.py`)
 
-**Google Fonts used:**
-- DM Serif Display
-- Syne
-- DM Mono
+A **Streamlit** web app that:
+
+- Connects to HiveMQ Cloud over TLS using **paho-mqtt** in a background thread
+- Subscribes to `farm/sensors` and updates a shared data store on every message
+- Displays live metrics: Temperature, Humidity, Soil Moisture, NPK values, Air Quality
+- Shows a **Low Soil Moisture** warning when soil < 30%
+- Has a **💧 Start Pump** button that publishes `PUMP_ON` to `farm/control`
+- Auto-refreshes every 2 seconds via `st.rerun()`
 
 ---
 
 ## Getting Started
 
-### Firmware Setup
+### 1. Firmware Setup
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/VishwaNaresh1409/hsm.git
-   cd hsm
-   ```
+Clone the repo and open `main.cpp`. Update the credentials at the top:
 
-2. Open `main.cpp` and fill in your credentials:
-   ```cpp
-   const char* ssid     = "YOUR_WIFI";
-   const char* password = "YOUR_PASSWORD";
+```cpp
+const char* ssid        = "YOUR_WIFI_SSID";
+const char* password    = "YOUR_WIFI_PASSWORD";
+const char* mqtt_server = "YOUR_CLUSTER.s1.eu.hivemq.cloud";
+const char* mqtt_user   = "YOUR_MQTT_USER";
+const char* mqtt_pass   = "YOUR_MQTT_PASSWORD";
+```
 
-   const char* mqtt_server = "YOUR_CLUSTER.s1.eu.hivemq.cloud";
-   const char* mqtt_user   = "YOUR_MQTT_USER";
-   const char* mqtt_pass   = "YOUR_MQTT_PASSWORD";
-   ```
+Build and flash with PlatformIO:
 
-3. Build and flash using PlatformIO:
-   ```bash
-   pio run --target upload
-   ```
+```bash
+pio run --target upload
+```
 
-4. Open Serial Monitor at **115200 baud** to verify live output:
-   ```bash
-   pio device monitor
-   ```
+Monitor serial output at **9600 baud**:
 
-5. Monitor incoming MQTT messages on the topic `vehicle/crash/data` using HiveMQ's web client or any MQTT explorer tool.
+```bash
+pio device monitor --baud 9600
+```
 
-### Landing Page
+### 2. Dashboard Setup
 
-Simply open `index.html` in any modern browser — no server required.
+Install Python dependencies:
+
+```bash
+pip install streamlit paho-mqtt
+```
+
+Update the MQTT credentials at the top of `mqtt.py` to match your broker, then run:
+
+```bash
+streamlit run mqtt.py
+```
+
+Open your browser at `http://localhost:8501`.
 
 ---
 
 ## Configuration Notes
 
-- `espClient.setInsecure()` is used to skip TLS certificate verification. **For production**, replace this with proper CA certificate pinning.
-- The sensor publishes every **1000ms**. Adjust the `delay(1000)` in `loop()` for higher/lower frequency.
-- G-force threshold logic for crash detection can be added in `loop()` — compare `gForce` against a threshold (e.g. `> 3.0`) and trigger an alert publish on a separate topic.
+- `espClient.setInsecure()` skips TLS certificate validation. Fine for prototyping; use proper CA pinning for production.
+- Soil moisture mapping assumes raw ADC range of **4095 (dry) → 1200 (wet)**. Recalibrate the `map()` call in `loop()` for your specific sensor.
+- Pump runs for a fixed **5 seconds** on each `PUMP_ON` command — adjust the `delay(5000)` in `callback()` as needed.
+- Publish interval is **5000 ms** — change `> 5000` in the `millis()` check in `loop()`.
 
 ---
 
@@ -122,9 +153,10 @@ Simply open `index.html` in any modern browser — no server required.
 
 ```
 hsm/
-├── main.cpp          # ESP32 firmware — MPU6050 + MQTT crash detection
-├── platformio.ini    # PlatformIO build configuration
-├── index.html        # Virgo product landing page (self-contained)
+├── main.cpp          # ESP32 firmware — sensors + MQTT + pump control
+├── platformio.ini    # PlatformIO build config (ESP32 Arduino)
+├── mqtt.py           # Streamlit dashboard — live data + pump button
+├── index.html        # Virgo product landing page (self-contained HTML)
 └── README.md
 ```
 
@@ -132,17 +164,7 @@ hsm/
 
 ## About Virgo
 
-Virgo is a precision agriculture intelligence platform targeting Indian smallholder farmers. It combines IoT soil sensors, AI-based crop health analysis, and market-linkage tools into a single SaaS platform.
-
-**Key Metrics (from landing page):**
-- 58% average reduction in water usage
-- 43% increase in crop yield
-- $9.5B total addressable market
-- Projected profitability by Year 2 (₹43.6L net profit on ₹1.9Cr revenue)
-
-**Revenue Model:** Monthly SaaS subscription per farm + hardware licensing to government agri programs.
-
-**Developed at:** Punjab Engineering College, Chandigarh, under the Wadhwani Foundation.
+`index.html` is a standalone animated landing page for **Virgo**, the AI precision agriculture platform this hardware is part of — developed at **Punjab Engineering College, Chandigarh** under the **Wadhwani Foundation**.
 
 ---
 
